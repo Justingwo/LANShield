@@ -69,6 +69,7 @@
     <string name="lanshield_enabled">LANShield enabled</string>
     <string name="lanshield_start_failed_title">Couldn\'t start LANShield</string>
     <string name="lanshield_start_failed_text">The LAN firewall could not be started. Please try again.</string>
+    <string name="vpn_consent_missing_text">LANShield no longer has permission to run as a VPN. Tap to open LANShield and turn it on again.</string>
     <string name="lanshield_lets_you_control_lan_access_of_other_apps">LANShield lets you control\nLAN access of other apps</string>
     <string name="lanshield_logo">LANShield logo</string>
     <string name="last_24h_with_bytes">Last 24h: %1$s</string>

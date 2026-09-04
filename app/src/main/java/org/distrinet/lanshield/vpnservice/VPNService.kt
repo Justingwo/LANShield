@@ -3,9 +3,17 @@ package org.distrinet.lanshield.vpnservice
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE
 import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -42,12 +50,8 @@ import org.distrinet.lanshield.database.model.LANShieldSession
 import org.distrinet.lanshield.database.model.LanAccessPolicy
 import tech.httptoolkit.android.vpn.socket.IProtectSocket
 import tech.httptoolkit.android.vpn.socket.SocketProtector
-import java.net.InetAddress
-import java.net.NetworkInterface
-import java.net.SocketException
 import javax.inject.Inject
 
-/* The IP address of the virtual network interface */
 const val TUN_IP4_ADDRESS = "10.215.173.1"
 const val TUN_IP6_ADDRESS = "fd00:2:fd00:1:fd00:1:fd00:1"
 
@@ -56,6 +60,11 @@ class VPNService : VpnService(), IProtectSocket {
     private var vpnRunnable: VPNRunnable? = null
     private var vpnInterface: ParcelFileDescriptor? = null
     private var vpnThread: Thread? = null
+
+    private var installedInterfaceRoutes: Set<RoutePrefix> = emptySet()
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val routeRefresh = Runnable { refreshInterfaceRoutes() }
 
     private lateinit var accessPolicies: LiveData<List<LanAccessPolicy>>
     private lateinit var defaultForwardPolicyLive: LiveData<Policy>
@@ -88,16 +97,13 @@ class VPNService : VpnService(), IProtectSocket {
     lateinit var lanShieldSessionDao: LANShieldSessionDao
 
     companion object {
-        private const val LOCAL_NETWORK_PERMISSION_NOTIFICATION_ID = 2
+        private const val REFUSAL_NOTIFICATION_ID = 2
+        private const val ROUTE_REFRESH_DEBOUNCE_MS = 1500L
         const val STOP_VPN_SERVICE = "STOP_VPN_SERVICE"
     }
 
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Initialize once and keep the same LiveData instances for the service's lifetime. onStartCommand
-        // runs again on every restart (incl. the STOP path), and re-creating these would leave the
-        // observers added by startVPNThread() attached to orphaned instances that stopVPNThread() can no
-        // longer remove — leaking the VPNRunnable.
         if (!this::defaultForwardPolicyLive.isInitialized) {
             defaultForwardPolicyLive = dataStore.data.map {
                 Policy.valueOf(
@@ -131,47 +137,63 @@ class VPNService : VpnService(), IProtectSocket {
 
         updateAlwaysOnStatus()
 
-        // Only the explicit STOP action stops the VPN. Everything else, including a null intent,
-        // which the OS re-delivers when START_STICKY restarts the process after a kill, and when
-        // Android's always-on VPN restarts us, is treated as a start request, so the tunnel is
-        // always re-established instead of silently staying down with the UI switch showing DISABLED.
         if (intent?.action == STOP_VPN_SERVICE) {
             if (isVPNRunning()) {
                 stopVPNThread()
                 stopForeground(STOP_FOREGROUND_REMOVE)
             }
-            // Fully tear down so START_STICKY won't resurrect a VPN the user explicitly stopped.
             stopSelf()
         } else if (!isVPNRunning()) {
             val notifications = LANShieldNotificationManager(this)
             notifications.createNotificationChannels()
             if (!LocalNetworkPermission.isGranted(this)) {
-                startForeground(
-                    LOCAL_NETWORK_PERMISSION_NOTIFICATION_ID,
+                return refuseStart(
                     notifications.buildServiceErrorNotification(
                         getString(R.string.local_network_permission_missing_title),
                         getString(R.string.local_network_permission_missing_text)
-                    ),
-                    FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED
+                    )
                 )
-                stopForeground(STOP_FOREGROUND_DETACH)
-                stopSelf()
-                return START_NOT_STICKY
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    1,
-                    createNotification(),
-                    FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED
+            if (prepare(this) != null) {
+                return refuseStart(
+                    notifications.buildServiceErrorNotification(
+                        getString(R.string.lanshield_start_failed_title),
+                        getString(R.string.vpn_consent_missing_text)
+                    )
                 )
-            } else {
-                startForeground(1, createNotification())
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    startForeground(1, createNotification(), FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
+                } else {
+                    startForeground(1, createNotification())
+                }
+            } catch (e: SecurityException) {
+                // Foreground eligibility lost between the checks above and here.
+                Log.w(TAG, "Not permitted to start as a foreground service", e)
+                return refuseStart(
+                    notifications.buildServiceErrorNotification(
+                        getString(R.string.lanshield_start_failed_title),
+                        getString(R.string.lanshield_start_failed_text)
+                    )
+                )
             }
             startVPNThread()
         }
 
         // Return the appropriate service restart behavior
         return START_STICKY
+    }
+
+    private fun refuseStart(notification: Notification): Int {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(REFUSAL_NOTIFICATION_ID, notification, FOREGROUND_SERVICE_TYPE_SHORT_SERVICE)
+        } else {
+            startForeground(REFUSAL_NOTIFICATION_ID, notification)
+        }
+        stopForeground(STOP_FOREGROUND_DETACH)
+        stopSelf()
+        return START_NOT_STICKY
     }
 
     override fun onRevoke() {
@@ -183,6 +205,7 @@ class VPNService : VpnService(), IProtectSocket {
     }
 
     override fun onDestroy() {
+        unregisterNetworkCallback()
         setVPNRunning(false)
         stopLanShieldSession()
         super.onDestroy()
@@ -229,8 +252,9 @@ class VPNService : VpnService(), IProtectSocket {
             ).build()
     }
 
-    private fun stopVPNThread() {
-        stopLanShieldSession()
+    private fun stopVPNThread(keepSession: Boolean = false) {
+        unregisterNetworkCallback()
+        if (!keepSession) stopLanShieldSession()
 
         vpnRunnable?.let {
             accessPolicies.removeObserver(it.accessPoliesObserver)
@@ -314,66 +338,20 @@ class VPNService : VpnService(), IProtectSocket {
         // .excludeRoute("ff0e::", 16)
     }
 
-    private fun getNetworkAddress(address: InetAddress, prefixLength: Short): InetAddress {
-        val fullBytes = prefixLength / 8
-        val remainingBits = prefixLength % 8
-        var addressBytes = address.address.copyOfRange(0, fullBytes)
-
-        if (remainingBits != 0)
-            addressBytes += (address.address[fullBytes].toInt() and (0xFF shl (8 - remainingBits))).toByte()
-
-        return InetAddress.getByAddress(addressBytes.copyOf(16))
-    }
-
-    private fun addInterfaceAddressRoutes(builder: Builder) {
-        // TODO: This code is not re-run when switching (Wi-Fi) networks. For IPv4 this is likely not
-        // an issue, since usage of public IP addresses is uncommon in IPv4 networks. However, for
-        // IPv6, every network may use different addresses that are not captured by our IPv6 routes
-        // that are always installed. See how other VPNs do this and for starting points see:
-        // - https://stackoverflow.com/questions/6169059/android-event-for-internet-connectivity-state-change
-        // - https://medium.com/@veniamin.vynohradov/monitoring-internet-connection-state-in-android-da7ad915b5e5
-        val interfaces = try {
-            NetworkInterface.getNetworkInterfaces() ?: return
-        } catch (e: SocketException) {
-            Log.w(TAG, "Could not enumerate network interfaces", e)
-            return
-        }
-
-        for (networkInterface in interfaces) {
-            try {
-                if (networkInterface.isLoopback) continue
-
-                for (address in networkInterface.interfaceAddresses) {
-                    if (address.address.isAnyLocalAddress or
-                        address.address.isLinkLocalAddress or
-                        address.address.isSiteLocalAddress
-                    ) continue
-                    val networkAddress = getNetworkAddress(address.address, address.networkPrefixLength)
-                    builder.addRoute(networkAddress, address.networkPrefixLength.toInt())
-                    Log.d(
-                        TAG,
-                        "Also monitoring " + networkAddress.toString() + "/" + address.networkPrefixLength.toString()
-                    )
-                }
-            } catch (e: SocketException) {
-                // Interface disappeared between enumeration and query (ENODEV) — skip it.
-                Log.w(TAG, "Skipping interface ${networkInterface.name}: ${e.message}")
-            }
-        }
-    }
-
-
-    private fun startVPNThread() {
-        stopVPNThread()
+    private fun startVPNThread(keepSession: Boolean = false) {
         updateAlwaysOnStatus()
 
+        val interfaceRoutes = currentInterfaceRoutePrefixes()
         val builder = Builder()
         builder.setSession(getString(R.string.app_name) + " LAN Firewall")
             .addAddress(TUN_IP4_ADDRESS, 32)
             .addAddress(TUN_IP6_ADDRESS, 128)
         addIpv4Routes(builder)
         addIpv6Routes(builder)
-        addInterfaceAddressRoutes(builder)
+        for (route in interfaceRoutes) {
+            Log.d(TAG, "Also monitoring $route")
+            builder.addRoute(route.address, route.prefixLength)
+        }
         builder.addDisallowedApplication(packageName)
             .setBlocking(true)
             .setMtu(MAX_PACKET_LEN)
@@ -382,11 +360,20 @@ class VPNService : VpnService(), IProtectSocket {
         val vpnInterface = try {
             builder.establish()
         } catch (e: IllegalStateException) {
+            // Builder parameters rejected by the platform.
             Log.w(TAG, "Could not establish VPN interface", e)
             crashReporter.recordException(e)
             null
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Not permitted to establish VPN interface", e)
+            null
         }
         if (vpnInterface == null) {
+            if (keepSession && isVPNRunning()) {
+                Log.w(TAG, "Keeping current VPN interface after failed re-establish")
+                return
+            }
+            stopVPNThread()
             stopForeground(STOP_FOREGROUND_REMOVE)
             setVPNRunning(false)
             vpnNotificationManager.postServiceErrorNotification(
@@ -396,7 +383,10 @@ class VPNService : VpnService(), IProtectSocket {
             return
         }
 
+        // The new interface has replaced the old one; now tear down the old packet loop.
+        stopVPNThread(keepSession)
         this.vpnInterface = vpnInterface
+        installedInterfaceRoutes = interfaceRoutes
         SocketProtector.getInstance().setProtector(this)
 
         vpnRunnable = VPNRunnable(vpnInterface, vpnNotificationManager, this)
@@ -410,14 +400,60 @@ class VPNService : VpnService(), IProtectSocket {
 
         vpnThread = Thread(vpnRunnable, "VPN thread")
 
-        stopLanShieldSession()
-        val session = LANShieldSession.createLANShieldSession()
-        lanShieldSession = session
-        CoroutineScope(Dispatchers.IO).launch {
-            lanShieldSessionDao.insert(session)
+        if (!keepSession || lanShieldSession == null) {
+            stopLanShieldSession()
+            val session = LANShieldSession.createLANShieldSession()
+            lanShieldSession = session
+            CoroutineScope(Dispatchers.IO).launch {
+                lanShieldSessionDao.insert(session)
+            }
         }
         vpnThread!!.start()
         setVPNRunning(true)
+        registerNetworkCallback()
+    }
+
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = scheduleRouteRefresh()
+            override fun onLost(network: Network) = scheduleRouteRefresh()
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) =
+                scheduleRouteRefresh()
+        }
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        try {
+            getSystemService(ConnectivityManager::class.java).registerNetworkCallback(request, callback)
+            networkCallback = callback
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Could not register network callback", e)
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        mainHandler.removeCallbacks(routeRefresh)
+        networkCallback?.let {
+            try {
+                getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it)
+            } catch (_: IllegalArgumentException) {
+            }
+        }
+        networkCallback = null
+    }
+
+    private fun scheduleRouteRefresh() {
+        mainHandler.removeCallbacks(routeRefresh)
+        mainHandler.postDelayed(routeRefresh, ROUTE_REFRESH_DEBOUNCE_MS)
+    }
+
+    private fun refreshInterfaceRoutes() {
+        if (!isVPNRunning()) return
+        val current = currentInterfaceRoutePrefixes()
+        if (current == installedInterfaceRoutes) return
+        Log.i(TAG, "Interface routes changed $installedInterfaceRoutes -> $current; re-establishing VPN")
+        startVPNThread(keepSession = true)
     }
 
     private fun updateAlwaysOnStatus() {

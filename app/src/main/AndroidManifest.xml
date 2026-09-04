@@ -38,7 +38,7 @@
         <service
             android:name="org.distrinet.lanshield.vpnservice.VPNService"
             android:exported="true"
-            android:foregroundServiceType="systemExempted"
+            android:foregroundServiceType="systemExempted|shortService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             tools:ignore="ForegroundServicePermission" >
             <intent-filter>
