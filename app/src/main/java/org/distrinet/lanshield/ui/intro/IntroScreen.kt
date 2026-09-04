@@ -67,6 +67,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.distrinet.lanshield.ABOUT_LANSHIELD_URL
 import org.distrinet.lanshield.PRIVACY_POLICY_URL
+import org.distrinet.lanshield.LocalNetworkPermission
 import org.distrinet.lanshield.Policy
 import org.distrinet.lanshield.R
 import org.distrinet.lanshield.isAppUsageAccessGranted
@@ -76,6 +77,7 @@ import org.distrinet.lanshield.ui.intro.IntroSlides.DEFAULT_POLICY
 import org.distrinet.lanshield.ui.intro.IntroSlides.INTRO_FINISHED
 import org.distrinet.lanshield.ui.intro.IntroSlides.INTRO_START
 import org.distrinet.lanshield.ui.intro.IntroSlides.JOIN_USER_STUDY
+import org.distrinet.lanshield.ui.intro.IntroSlides.LOCAL_NETWORK
 import org.distrinet.lanshield.ui.intro.IntroSlides.NOTIFICATIONS
 import org.distrinet.lanshield.ui.intro.IntroSlides.SHARE_APP_USAGE
 import org.distrinet.lanshield.ui.settings.SettingsSwitchComp
@@ -87,9 +89,26 @@ enum class IntroSlides {
     INTRO_START,
     DEFAULT_POLICY,
     NOTIFICATIONS,
+    LOCAL_NETWORK,
     JOIN_USER_STUDY,
     SHARE_APP_USAGE,
     INTRO_FINISHED
+}
+
+/** Slides shown to this device, in order. Page indices in the pager are indices into this list. */
+internal fun introSlides(localNetworkRequired: Boolean = LocalNetworkPermission.isRequired()): List<IntroSlides> =
+    IntroSlides.entries.filter { it != LOCAL_NETWORK || localNetworkRequired }
+
+internal fun PagerState.currentSlide(slides: List<IntroSlides>): IntroSlides = slides[currentPage]
+
+fun scrollToSlide(
+    pagerState: PagerState,
+    slides: List<IntroSlides>,
+    target: IntroSlides,
+    coroutineScope: CoroutineScope,
+) {
+    val index = slides.indexOf(target)
+    if (index >= 0) scrollToPage(pagerState, index, coroutineScope)
 }
 
 @Composable
@@ -125,7 +144,7 @@ internal fun IntroRoute(viewModel: IntroViewModel, navigateToOverview: () -> Uni
 internal fun IntroStartPreview() {
     LANShieldTheme(darkTheme = true) {
         IntroScreen(
-            initialPage = INTRO_START.ordinal,
+            initialSlide = INTRO_START,
             createNotificationChannels = { })
     }
 }
@@ -135,7 +154,7 @@ internal fun IntroStartPreview() {
 internal fun IntroStartLightPreview() {
     LANShieldTheme(darkTheme = false) {
         IntroScreen(
-            initialPage = INTRO_START.ordinal,
+            initialSlide = INTRO_START,
             createNotificationChannels = { })
     }
 }
@@ -143,7 +162,7 @@ internal fun IntroStartLightPreview() {
 @Composable
 internal fun IntroScreen(
     modifier: Modifier = Modifier,
-    initialPage: Int = 0,
+    initialSlide: IntroSlides = INTRO_START,
     defaultPolicy: Policy = Policy.BLOCK,
     onChangeDefaultPolicy: (Policy) -> Unit = {},
     isShareAppUsageEnabled: Boolean = false,
@@ -154,10 +173,12 @@ internal fun IntroScreen(
     onChangeFinishAppIntro: (Boolean) -> Unit = {},
     createNotificationChannels: () -> Unit = {}
 ) {
-    val pageCount = IntroSlides.entries.size
-    val pagerState = rememberPagerState(pageCount = {
-        pageCount
-    }, initialPage = initialPage)
+    val slides = remember { introSlides() }
+    val pageCount = slides.size
+    val pagerState = rememberPagerState(
+        pageCount = { pageCount },
+        initialPage = slides.indexOf(initialSlide).coerceAtLeast(0),
+    )
 
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -165,11 +186,14 @@ internal fun IntroScreen(
 
     var notificationsEnabled by remember { mutableStateOf(areNotificationsEnabled(context)) }
     var notificationRequested by remember { mutableStateOf(false) }
+    var localNetworkGranted by remember { mutableStateOf(LocalNetworkPermission.isGranted(context)) }
+    var localNetworkRequested by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 notificationsEnabled = areNotificationsEnabled(context)
+                localNetworkGranted = LocalNetworkPermission.isGranted(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -199,13 +223,32 @@ internal fun IntroScreen(
         }
     }
 
+    val currentSlide = pagerState.currentSlide(slides)
+    val requestLocalNetworkPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        localNetworkRequested = true
+        localNetworkGranted = granted
+    }
+    val localNetworkPermanentlyDenied = !localNetworkGranted &&
+        localNetworkRequested && activity != null &&
+        !activity.shouldShowRequestPermissionRationale(LocalNetworkPermission.PERMISSION)
+    val onAllowLocalNetwork: () -> Unit = {
+        if (localNetworkPermanentlyDenied) {
+            LocalNetworkPermission.openAppSettings(context)
+        } else {
+            requestLocalNetworkPermissionLauncher.launch(LocalNetworkPermission.PERMISSION)
+        }
+    }
+
     val canSwipeForward =
-        (pagerState.currentPage != NOTIFICATIONS.ordinal || notificationsEnabled) &&
-                pagerState.currentPage != JOIN_USER_STUDY.ordinal &&
-                (pagerState.currentPage != INTRO_FINISHED.ordinal || isShareLanMetricsEnabled)
+        (currentSlide != NOTIFICATIONS || notificationsEnabled) &&
+                (currentSlide != LOCAL_NETWORK || localNetworkGranted) &&
+                currentSlide != JOIN_USER_STUDY &&
+                (currentSlide != INTRO_FINISHED || isShareLanMetricsEnabled)
 
     val canSwipeBack =
-        pagerState.currentPage != INTRO_FINISHED.ordinal || isShareLanMetricsEnabled
+        currentSlide != INTRO_FINISHED || isShareLanMetricsEnabled
 
     val canSwipeForwardState = rememberUpdatedState(canSwipeForward)
     val canSwipeBackState = rememberUpdatedState(canSwipeBack)
@@ -254,16 +297,16 @@ internal fun IntroScreen(
                     .fillMaxHeight()
                     .nestedScroll(blockSwipe)
             ) { page ->
-                when (page) {
-                    INTRO_START.ordinal -> IntroSlide(page, pagerState)
-                    DEFAULT_POLICY.ordinal -> DefaultPolicySlide(
+                when (slides[page]) {
+                    INTRO_START -> IntroSlide(page, pagerState)
+                    DEFAULT_POLICY -> DefaultPolicySlide(
                         page = page,
                         pagerState = pagerState,
                         defaultPolicy = defaultPolicy,
                         onChangeDefaultPolicy = onChangeDefaultPolicy
                     )
 
-                    NOTIFICATIONS.ordinal -> NotificationSlide(
+                    NOTIFICATIONS -> NotificationSlide(
                         page = page,
                         pagerState = pagerState,
                         notificationsEnabled = notificationsEnabled,
@@ -271,14 +314,22 @@ internal fun IntroScreen(
                         onAllowNotifications = onAllowNotifications,
                     )
 
-                    JOIN_USER_STUDY.ordinal -> ShareLanMetricsSlide(
+                    LOCAL_NETWORK -> LocalNetworkSlide(
+                        page = page,
+                        pagerState = pagerState,
+                        granted = localNetworkGranted,
+                        permanentlyDenied = localNetworkPermanentlyDenied,
+                        onAllow = onAllowLocalNetwork,
+                    )
+
+                    JOIN_USER_STUDY -> ShareLanMetricsSlide(
                         page = page,
                         pagerState = pagerState,
                         onChangeShareLanMetrics = onChangeShareLanMetrics,
                         isShareLanMetricsEnabled = isShareLanMetricsEnabled
                     )
 
-                    SHARE_APP_USAGE.ordinal -> ShareAppUsageSlide(
+                    SHARE_APP_USAGE -> ShareAppUsageSlide(
                         page = page,
                         pagerState = pagerState,
                         isShareAppUsageEnabled = isShareAppUsageEnabled,
@@ -290,11 +341,12 @@ internal fun IntroScreen(
                         )
                     }
 
-                    INTRO_FINISHED.ordinal -> IntroFinishedSlide(page, pagerState)
+                    INTRO_FINISHED -> IntroFinishedSlide(page, pagerState)
                 }
             }
             IntroBottomBar(
                 pagerState = pagerState,
+                slides = slides,
                 pageCount = pageCount,
                 coroutineScope = coroutineScope,
                 onChangeShareLanMetrics = onChangeShareLanMetrics,
@@ -303,6 +355,7 @@ internal fun IntroScreen(
                 onChangeFinishAppIntro = onChangeFinishAppIntro,
                 requestNotificationPermissionLauncher = requestNotificationPermissionLauncher,
                 notificationsEnabled = notificationsEnabled,
+                localNetworkGranted = localNetworkGranted,
             )
         }
     }
@@ -311,6 +364,7 @@ internal fun IntroScreen(
 @Composable
 private fun IntroBottomBar(
     pagerState: PagerState,
+    slides: List<IntroSlides>,
     pageCount: Int,
     coroutineScope: CoroutineScope,
     onChangeShareLanMetrics: (Boolean) -> Unit,
@@ -319,6 +373,7 @@ private fun IntroBottomBar(
     onChangeFinishAppIntro: (Boolean) -> Unit,
     requestNotificationPermissionLauncher: androidx.activity.compose.ManagedActivityResultLauncher<String, Boolean>,
     notificationsEnabled: Boolean,
+    localNetworkGranted: Boolean,
 ) {
     Column(
         modifier = Modifier
@@ -339,6 +394,7 @@ private fun IntroBottomBar(
                 IntroLeftButton(
                     coroutineScope = coroutineScope,
                     pagerState = pagerState,
+                    slides = slides,
                     onChangeShareLanMetrics = onChangeShareLanMetrics,
                     isShareLanMetricsEnabled = isShareLanMetricsEnabled
                 )
@@ -347,12 +403,14 @@ private fun IntroBottomBar(
                 IntroRightButton(
                     coroutineScope = coroutineScope,
                     pagerState = pagerState,
+                    slides = slides,
                     onChangeShareLanMetrics = onChangeShareLanMetrics,
                     isShareLanMetricsEnabled = isShareLanMetricsEnabled,
                     navigateToOverview = navigateToOverview,
                     onChangeFinishAppIntro = onChangeFinishAppIntro,
                     requestNotificationPermissionLauncher = requestNotificationPermissionLauncher,
                     notificationsEnabled = notificationsEnabled,
+                    localNetworkGranted = localNetworkGranted,
                 )
             }
         }
@@ -393,13 +451,14 @@ fun doShareLanMetricsDecision(
     shareLanMetrics: Boolean,
     onChangeShareLanMetrics: (Boolean) -> Unit,
     coroutineScope: CoroutineScope,
-    pagerState: PagerState
+    pagerState: PagerState,
+    slides: List<IntroSlides>,
 ) {
     onChangeShareLanMetrics(shareLanMetrics)
     if (shareLanMetrics) {
-        scrollToPage(pagerState, SHARE_APP_USAGE.ordinal, coroutineScope)
+        scrollToSlide(pagerState, slides, SHARE_APP_USAGE, coroutineScope)
     } else {
-        scrollToPage(pagerState, INTRO_FINISHED.ordinal, coroutineScope)
+        scrollToSlide(pagerState, slides, INTRO_FINISHED, coroutineScope)
     }
 }
 
@@ -411,7 +470,7 @@ fun scrollToPage(pagerState: PagerState, targetPage: Int, coroutineScope: Corout
 }
 
 fun scrollToNextPage(pagerState: PagerState, coroutineScope: CoroutineScope) {
-    if (pagerState.currentPage >= IntroSlides.entries.size - 1) return
+    if (pagerState.currentPage >= pagerState.pageCount - 1) return
     scrollToPage(pagerState, pagerState.currentPage + 1, coroutineScope)
 
 }
@@ -447,7 +506,7 @@ internal fun IntroSlide(page: Int, pagerState: PagerState, modifier: Modifier = 
 internal fun DefaultPolicySlidePreview() {
     LANShieldTheme(darkTheme = true) {
         IntroScreen(
-            initialPage = DEFAULT_POLICY.ordinal,
+            initialSlide = DEFAULT_POLICY,
             createNotificationChannels = { })
     }
 }
@@ -490,7 +549,7 @@ internal fun DefaultPolicySlide(
 internal fun NotificationSlidePreview() {
     LANShieldTheme(darkTheme = true) {
         IntroScreen(
-            initialPage = NOTIFICATIONS.ordinal,
+            initialSlide = NOTIFICATIONS,
             createNotificationChannels = { })
     }
 }
@@ -541,7 +600,7 @@ internal fun NotificationSlide(
 fun ShareLanMetricsSlidePreview() {
     LANShieldTheme(darkTheme = true) {
         IntroScreen(
-            initialPage = JOIN_USER_STUDY.ordinal,
+            initialSlide = JOIN_USER_STUDY,
             createNotificationChannels = { })
     }
 }
@@ -551,8 +610,45 @@ fun ShareLanMetricsSlidePreview() {
 @Composable
 internal fun ShareAppUsageSlidePreview() {
     LANShieldTheme(darkTheme = true) {
-        IntroScreen(initialPage = SHARE_APP_USAGE.ordinal)
+        IntroScreen(initialSlide = SHARE_APP_USAGE)
     }
+}
+
+@Preview
+@Composable
+internal fun LocalNetworkSlidePreview() {
+    LANShieldTheme(darkTheme = true) {
+        IntroScreen(initialSlide = LOCAL_NETWORK, createNotificationChannels = { })
+    }
+}
+
+@Composable
+internal fun LocalNetworkSlide(
+    page: Int,
+    pagerState: PagerState,
+    granted: Boolean = false,
+    permanentlyDenied: Boolean = false,
+    onAllow: () -> Unit = {},
+) {
+    OnboardingSlide(
+        page = page,
+        pagerState = pagerState,
+        title = stringResource(R.string.local_network_access),
+        icon = LANShieldIcons.Lan,
+        body = stringResource(R.string.intro_local_network).trimIndent(),
+        action = {
+            val label = when {
+                granted -> stringResource(R.string.local_network_granted)
+                permanentlyDenied -> stringResource(R.string.open_app_settings)
+                else -> stringResource(R.string.allow_local_network)
+            }
+            OnboardingPrimaryButton(
+                text = label,
+                onClick = onAllow,
+                enabled = !granted,
+            )
+        },
+    )
 }
 
 private const val POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS"
@@ -621,7 +717,7 @@ internal fun ShareAppUsageSlide(
 internal fun IntroFinishedSlidePreview() {
     LANShieldTheme(darkTheme = true) {
         IntroScreen(
-            initialPage = INTRO_FINISHED.ordinal,
+            initialSlide = INTRO_FINISHED,
             createNotificationChannels = { })
     }
 }

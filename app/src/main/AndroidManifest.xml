@@ -12,6 +12,7 @@
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
@@ -24,7 +25,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.LANShield"
         android:name="org.distrinet.lanshield.LANShieldApplication"
-        tools:targetApi="35">
+        tools:targetApi="37">
         <activity
             android:name="org.distrinet.lanshield.MainActivity"
             android:exported="true"

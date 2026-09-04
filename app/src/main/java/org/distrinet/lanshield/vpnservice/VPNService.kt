@@ -26,6 +26,7 @@ import org.distrinet.lanshield.ALLOW_MULTICAST
 import org.distrinet.lanshield.DEFAULT_POLICY_KEY
 import org.distrinet.lanshield.HIDE_DNS_NOTIFICATIONS
 import org.distrinet.lanshield.HIDE_MULTICAST_NOTIFICATIONS
+import org.distrinet.lanshield.LocalNetworkPermission
 import org.distrinet.lanshield.MainActivity
 import org.distrinet.lanshield.Policy
 import org.distrinet.lanshield.R
@@ -87,6 +88,7 @@ class VPNService : VpnService(), IProtectSocket {
     lateinit var lanShieldSessionDao: LANShieldSessionDao
 
     companion object {
+        private const val LOCAL_NETWORK_PERMISSION_NOTIFICATION_ID = 2
         const val STOP_VPN_SERVICE = "STOP_VPN_SERVICE"
     }
 
@@ -129,9 +131,9 @@ class VPNService : VpnService(), IProtectSocket {
 
         updateAlwaysOnStatus()
 
-        // Only the explicit STOP action stops the VPN. Everything else — including a null intent,
+        // Only the explicit STOP action stops the VPN. Everything else, including a null intent,
         // which the OS re-delivers when START_STICKY restarts the process after a kill, and when
-        // Android's always-on VPN restarts us — is treated as a start request, so the tunnel is
+        // Android's always-on VPN restarts us, is treated as a start request, so the tunnel is
         // always re-established instead of silently staying down with the UI switch showing DISABLED.
         if (intent?.action == STOP_VPN_SERVICE) {
             if (isVPNRunning()) {
@@ -141,7 +143,21 @@ class VPNService : VpnService(), IProtectSocket {
             // Fully tear down so START_STICKY won't resurrect a VPN the user explicitly stopped.
             stopSelf()
         } else if (!isVPNRunning()) {
-            LANShieldNotificationManager(this).createNotificationChannels()
+            val notifications = LANShieldNotificationManager(this)
+            notifications.createNotificationChannels()
+            if (!LocalNetworkPermission.isGranted(this)) {
+                startForeground(
+                    LOCAL_NETWORK_PERMISSION_NOTIFICATION_ID,
+                    notifications.buildServiceErrorNotification(
+                        getString(R.string.local_network_permission_missing_title),
+                        getString(R.string.local_network_permission_missing_text)
+                    ),
+                    FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED
+                )
+                stopForeground(STOP_FOREGROUND_DETACH)
+                stopSelf()
+                return START_NOT_STICKY
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
                     1,

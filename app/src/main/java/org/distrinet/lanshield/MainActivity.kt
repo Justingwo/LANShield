@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
     lateinit var vpnServiceActionRequest: MutableLiveData<VPN_SERVICE_ACTION>
     private lateinit var vpnPermissionLauncher: ActivityResultLauncher<Intent>
     private lateinit var notificationPermissionLauncher: ActivityResultLauncher<String>
+    private lateinit var localNetworkPermissionLauncher: ActivityResultLauncher<String>
 
     @Inject
     lateinit var dataStore: DataStore<Preferences>
@@ -76,10 +77,19 @@ class MainActivity : ComponentActivity() {
         notificationPermissionLauncher =
             registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
                 if (granted) {
-                    // Permission obtained; continue the enable flow that was paused to ask for it.
-                    proceedStartVPNService()
+                    // Permission obtained; re-enter the enable flow so the remaining gates run.
+                    startVPNService()
                 } else {
                     onNotificationPermissionDenied()
+                }
+            }
+
+        localNetworkPermissionLauncher =
+            registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                if (granted) {
+                    proceedStartVPNService()
+                } else {
+                    onLocalNetworkPermissionDenied()
                 }
             }
 
@@ -223,6 +233,12 @@ class MainActivity : ComponentActivity() {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             return
         }
+        // On API 37+ the tunnel forwards LAN traffic through our own sockets, which the OS blocks
+        // without ACCESS_LOCAL_NETWORK. Starting without it would silently kill all LAN traffic.
+        if (!LocalNetworkPermission.isGranted(this)) {
+            localNetworkPermissionLauncher.launch(LocalNetworkPermission.PERMISSION)
+            return
+        }
         proceedStartVPNService()
     }
 
@@ -254,6 +270,13 @@ class MainActivity : ComponentActivity() {
             !shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)
         ) {
             openAppNotificationSettings()
+        }
+    }
+
+    private fun onLocalNetworkPermissionDenied() {
+        Toast.makeText(this, R.string.local_network_permission_required, Toast.LENGTH_LONG).show()
+        if (!shouldShowRequestPermissionRationale(LocalNetworkPermission.PERMISSION)) {
+            LocalNetworkPermission.openAppSettings(this)
         }
     }
 

@@ -9,6 +9,11 @@
     <string name="allow_notifications">Allow notifications</string>
     <string name="open_notification_settings">Open notification settings</string>
     <string name="notifications_enabled">Notifications enabled</string>
+    <string name="allow_local_network">Allow local network access</string>
+    <string name="local_network_granted">Permission granted</string>
+    <string name="open_app_settings">Open app settings</string>
+    <string name="local_network_access">Local network access</string>
+    <string name="intro_local_network">The Nearby devices permission lets LANShield forward local network traffic for your apps.</string>
     <string name="alter_blocking_policy_on_a_per_app_basis">Alter blocking policy on a per app basis</string>
     <string name="anonymous_sharing">Anonymous sharing</string>
     <string name="any_detected_lan_traffic_will_be_shown_here">Any detected LAN traffic \nwill be shown here</string>
@@ -116,6 +121,9 @@
     <string name="why_vpn_icon">Why the VPN icon?</string>
     <string name="vpn_permission_request">VPN permission request</string>
     <string name="notification_permission_required">LANShield needs notification permission to run. Enable notifications to turn it on.</string>
+    <string name="local_network_permission_required">LANShield needs the Nearby devices permission to forward traffic to the local network.</string>
+    <string name="local_network_permission_missing_title">Local network permission missing</string>
+    <string name="local_network_permission_missing_text">LANShield needs the Nearby devices permission to forward traffic to the local network. Tap to open LANShield and grant it.</string>
     <string name="you_re_all_set">You\'re all set!</string>
     <string name="export">Export LAN Traffic</string>
     <string name="advanced">Advanced</string>

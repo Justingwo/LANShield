@@ -182,6 +182,9 @@ class LANShieldNotificationManager(private val context: Context) {
     }
 
     fun postServiceErrorNotification(title: String, text: String) {
+        notificationManager.notify(getNewNotificationId(), buildServiceErrorNotification(title, text))
+    }
+    fun buildServiceErrorNotification(title: String, text: String): Notification {
         val openAppIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         }
@@ -201,7 +204,7 @@ class LANShieldNotificationManager(private val context: Context) {
             .setAutoCancel(true)
             .setContentIntent(openAppPendingIntent)
             .build()
-        notificationManager.notify(getNewNotificationId(), notification)
+        return notification
     }
 
     fun createNotificationChannels() {

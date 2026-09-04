@@ -37,26 +37,29 @@ fun ShareLanMetricsSlide(
 fun IntroLeftButton(
     modifier: Modifier = Modifier,
     pagerState: PagerState,
+    slides: List<IntroSlides>,
     coroutineScope: CoroutineScope,
     onChangeShareLanMetrics: (Boolean) -> Unit,
     isShareLanMetricsEnabled: Boolean
 ) {
     when {
-        pagerState.currentPage == IntroSlides.JOIN_USER_STUDY.ordinal -> {
+        pagerState.currentSlide(slides) == IntroSlides.JOIN_USER_STUDY -> {
             OnboardingTextButton(
                 text = stringResource(R.string.disagree),
                 onClick = {
-                    doShareLanMetricsDecision(false, onChangeShareLanMetrics, coroutineScope, pagerState)
+                    doShareLanMetricsDecision(
+                        false, onChangeShareLanMetrics, coroutineScope, pagerState, slides
+                    )
                 },
                 modifier = modifier,
             )
         }
 
-        pagerState.currentPage == IntroSlides.INTRO_FINISHED.ordinal && !isShareLanMetricsEnabled -> {
+        pagerState.currentSlide(slides) == IntroSlides.INTRO_FINISHED && !isShareLanMetricsEnabled -> {
             OnboardingTextButton(
                 text = stringResource(R.string.back),
                 onClick = {
-                    scrollToPage(pagerState, IntroSlides.JOIN_USER_STUDY.ordinal, coroutineScope)
+                    scrollToSlide(pagerState, slides, IntroSlides.JOIN_USER_STUDY, coroutineScope)
                 },
                 modifier = modifier,
             )
@@ -76,6 +79,7 @@ fun IntroLeftButton(
 fun IntroRightButton(
     modifier: Modifier = Modifier,
     pagerState: PagerState,
+    slides: List<IntroSlides>,
     coroutineScope: CoroutineScope,
     onChangeShareLanMetrics: (Boolean) -> Unit,
     isShareLanMetricsEnabled: Boolean,
@@ -83,19 +87,22 @@ fun IntroRightButton(
     navigateToOverview: () -> Unit,
     requestNotificationPermissionLauncher: ManagedActivityResultLauncher<String, Boolean>,
     notificationsEnabled: Boolean,
+    localNetworkGranted: Boolean,
 ) {
-    when (pagerState.currentPage) {
-        IntroSlides.JOIN_USER_STUDY.ordinal -> {
+    when (pagerState.currentSlide(slides)) {
+        IntroSlides.JOIN_USER_STUDY -> {
             OnboardingPrimaryButton(
                 text = stringResource(R.string.agree),
                 onClick = {
-                    doShareLanMetricsDecision(true, onChangeShareLanMetrics, coroutineScope, pagerState)
+                    doShareLanMetricsDecision(
+                        true, onChangeShareLanMetrics, coroutineScope, pagerState, slides
+                    )
                 },
                 modifier = modifier,
             )
         }
 
-        IntroSlides.NOTIFICATIONS.ordinal -> {
+        IntroSlides.NOTIFICATIONS -> {
             OnboardingPrimaryButton(
                 text = stringResource(R.string.continue_label),
                 onClick = { scrollToNextPage(pagerState, coroutineScope) },
@@ -104,7 +111,16 @@ fun IntroRightButton(
             )
         }
 
-        IntroSlides.INTRO_FINISHED.ordinal -> {
+        IntroSlides.LOCAL_NETWORK -> {
+            OnboardingPrimaryButton(
+                text = stringResource(R.string.continue_label),
+                onClick = { scrollToNextPage(pagerState, coroutineScope) },
+                enabled = localNetworkGranted,
+                modifier = modifier,
+            )
+        }
+
+        IntroSlides.INTRO_FINISHED -> {
             OnboardingPrimaryButton(
                 text = stringResource(R.string.finish),
                 onClick = {
