@@ -18,7 +18,7 @@ android {
         applicationId = "org.distrinet.lanshield"
         minSdk = 29
         targetSdk = 37
-        versionCode = 21
+        versionCode = 22
         versionName = "0.97"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
