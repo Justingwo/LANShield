@@ -7,6 +7,8 @@ import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
+import org.distrinet.lanshield.LocalNetworkPermission
+import org.distrinet.lanshield.R
 
 class VPNServiceWorker(private val appContext: Context, workerParams: WorkerParameters) :
     Worker(appContext, workerParams) {
@@ -17,12 +19,28 @@ class VPNServiceWorker(private val appContext: Context, workerParams: WorkerPara
 
     override fun doWork(): Result {
         val context = applicationContext
-        if (hasVPNConsent()) {
-            val serviceIntent = Intent(context, VPNService::class.java)
-            context.startForegroundService(serviceIntent)
-            return Result.success()
+        // Check the service's start preconditions here, before startForegroundService(): that call
+        // is a promise to go foreground within seconds, and from BOOT_COMPLETED the only allowed
+        // type (systemExempted) itself depends on VPN consent. So when a precondition is missing,
+        // tell the user from here and don't start the service at all.
+        val problem = when {
+            !LocalNetworkPermission.isGranted(context) ->
+                R.string.local_network_permission_missing_title to R.string.local_network_permission_missing_text
+            !hasVPNConsent() ->
+                R.string.lanshield_start_failed_title to R.string.vpn_consent_missing_text
+            else -> null
         }
-        return Result.failure()
+        if (problem != null) {
+            val notifications = LANShieldNotificationManager(context)
+            notifications.createNotificationChannels()
+            notifications.postServiceErrorNotification(
+                context.getString(problem.first),
+                context.getString(problem.second)
+            )
+            return Result.failure()
+        }
+        context.startForegroundService(Intent(context, VPNService::class.java))
+        return Result.success()
     }
 
     companion object {

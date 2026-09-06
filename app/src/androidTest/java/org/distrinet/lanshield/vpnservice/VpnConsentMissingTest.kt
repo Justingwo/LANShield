@@ -8,6 +8,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import dagger.hilt.android.EntryPointAccessors
+import org.distrinet.lanshield.LocalNetworkPermission
 import org.distrinet.lanshield.R
 import org.distrinet.lanshield.VPN_SERVICE_STATUS
 import org.distrinet.lanshield.VpnStatusEntryPoint
@@ -35,6 +36,10 @@ class VpnConsentMissingTest {
     @Before
     fun setUp() {
         shell("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
+        // The local network check runs before the consent check; satisfy it so consent is what fails.
+        if (LocalNetworkPermission.isRequired()) {
+            shell("pm grant ${context.packageName} ${LocalNetworkPermission.PERMISSION}")
+        }
         shell("appops set ${context.packageName} ACTIVATE_VPN deny")
     }
 

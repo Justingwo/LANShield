@@ -1,6 +1,7 @@
 package org.distrinet.lanshield.vpnservice
 
 import android.app.Notification
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE
@@ -97,7 +98,8 @@ class VPNService : VpnService(), IProtectSocket {
     lateinit var lanShieldSessionDao: LANShieldSessionDao
 
     companion object {
-        private const val REFUSAL_NOTIFICATION_ID = 2
+        private const val REFUSAL_FOREGROUND_ID = 2
+        private const val REFUSAL_NOTIFICATION_ID = 3
         private const val ROUTE_REFRESH_DEBOUNCE_MS = 1500L
         const val STOP_VPN_SERVICE = "STOP_VPN_SERVICE"
     }
@@ -185,13 +187,37 @@ class VPNService : VpnService(), IProtectSocket {
         return START_STICKY
     }
 
+    /**
+     * Declines to start the tunnel, leaving [notification] for the user. Callers may have used
+     * startForegroundService(), in which case startForeground() must still be called or the OS
+     * kills the process. Which foreground types are permitted depends on how we were started:
+     * systemExempted needs VPN consent, shortService is not allowed from BOOT_COMPLETED. Try them
+     * in turn; if none is allowed, fall through anyway (the boot worker checks the preconditions
+     * itself, so it never makes a foreground promise that can't be kept). Either way the user
+     * ends up with a plain notification explaining what is missing.
+     */
     private fun refuseStart(notification: Notification): Int {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(REFUSAL_NOTIFICATION_ID, notification, FOREGROUND_SERVICE_TYPE_SHORT_SERVICE)
+        val types = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            listOf(FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED, FOREGROUND_SERVICE_TYPE_SHORT_SERVICE)
         } else {
-            startForeground(REFUSAL_NOTIFICATION_ID, notification)
+            listOf(null)
         }
-        stopForeground(STOP_FOREGROUND_DETACH)
+        val promoted = types.any { type ->
+            try {
+                if (type == null) startForeground(REFUSAL_FOREGROUND_ID, notification)
+                else startForeground(REFUSAL_FOREGROUND_ID, notification, type)
+                true
+            } catch (e: RuntimeException) {
+                // SecurityException (consent gone) or ForegroundServiceStartNotAllowedException /
+                // IllegalStateException (type not allowed from this start context).
+                Log.w(TAG, "Foreground type $type not allowed while refusing start: ${e.message}")
+                false
+            }
+        }
+        // Post the explanation as a plain notification rather than detaching the foreground one, so
+        // the user sees the same thing whichever type (or none) was accepted above.
+        if (promoted) stopForeground(STOP_FOREGROUND_REMOVE)
+        getSystemService(NotificationManager::class.java).notify(REFUSAL_NOTIFICATION_ID, notification)
         stopSelf()
         return START_NOT_STICKY
     }
