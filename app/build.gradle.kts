@@ -18,8 +18,8 @@ android {
         applicationId = "org.distrinet.lanshield"
         minSdk = 29
         targetSdk = 37
-        versionCode = 23
-        versionName = "0.98"
+        versionCode = 24
+        versionName = "0.99"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Run each instrumented test in its own process with cleared app data/permissions, so that
